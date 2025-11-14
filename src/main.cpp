@@ -12,7 +12,6 @@ BleMouse bleMouse;
 
 #include "hid_host.h"
 #include "hid_usage_keyboard.h"
-#include "hid_usage_mouse.h"
 
 /* GPIO Pin number for quit from example logic */
 #define APP_QUIT_PIN                GPIO_NUM_0
@@ -20,6 +19,24 @@ BleMouse bleMouse;
 static const char *TAG = "example";
 QueueHandle_t hid_host_event_queue;
 bool user_shutdown = false;
+
+
+typedef struct {
+    union {
+        struct {
+            uint8_t button1:    1;
+            uint8_t button2:    1;
+            uint8_t button3:    1;
+            uint8_t reserved:   5;
+        };
+        uint8_t val;
+    } buttons;
+    int8_t x_displacement;
+    int8_t y_displacement;
+    int8_t scroll_wheel;
+} __attribute__((packed)) hid_mouse_input_report_t;
+
+
 
 /**
  * @brief HID Host event
@@ -284,10 +301,10 @@ static void hid_host_keyboard_report_callback(const uint8_t *const data,
  */
 static void hid_host_mouse_report_callback(const uint8_t *const data,
                                            const int length) {
-  hid_mouse_input_report_boot_t *mouse_report =
-      (hid_mouse_input_report_boot_t *)data;
+  hid_mouse_input_report_t *mouse_report =
+      (hid_mouse_input_report_t *)data;
 
-  if (length < sizeof(hid_mouse_input_report_boot_t)) {
+  if (length < sizeof(hid_mouse_input_report_t)) {
     return;
   }
 
@@ -300,9 +317,11 @@ static void hid_host_mouse_report_callback(const uint8_t *const data,
 
   hid_print_new_device_report_header(HID_PROTOCOL_MOUSE);
 
-  printf("X: %06d\tY: %06d\t|%c|%c|\r", x_pos, y_pos,
+  printf("X: %06d\tY: %06d\t|%c|%c|%c|\t%d\r", x_pos, y_pos,
          (mouse_report->buttons.button1 ? 'o' : ' '),
-         (mouse_report->buttons.button2 ? 'o' : ' '));
+         (mouse_report->buttons.button3 ? 'o' : ' '),
+         (mouse_report->buttons.button2 ? 'o' : ' '),
+         mouse_report->scroll_wheel);
   fflush(stdout);
 
   if(bleMouse.isConnected()) {
@@ -330,6 +349,21 @@ static void hid_host_mouse_report_callback(const uint8_t *const data,
       } else {
         bleMouse.release(MOUSE_RIGHT);
       }
+    }
+
+    // Track and update middle button state
+    if (mouse_report->buttons.button3 != middleButtonPressed) {
+      middleButtonPressed = mouse_report->buttons.button3;
+      if (middleButtonPressed) {
+        bleMouse.press(MOUSE_MIDDLE);
+      } else {
+        bleMouse.release(MOUSE_MIDDLE);
+      }
+    }
+
+    // Handle scroll wheel
+    if (mouse_report->scroll_wheel != 0) {
+      bleMouse.move(0, 0, mouse_report->scroll_wheel);
     }
   }
 }
@@ -421,13 +455,20 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
              hid_proto_name_str[dev_params.proto]);
 
     ESP_ERROR_CHECK(hid_host_device_open(hid_device_handle, &dev_config));
+
+
     if (HID_SUBCLASS_BOOT_INTERFACE == dev_params.sub_class) {
-      ESP_ERROR_CHECK(hid_class_request_set_protocol(hid_device_handle,
-                                                     HID_REPORT_PROTOCOL_BOOT));
+      if (HID_PROTOCOL_MOUSE == dev_params.proto) {
+        ESP_LOGI(TAG, "Setting mouse to REPORT protocol mode");
+        ESP_ERROR_CHECK(hid_class_request_set_protocol(hid_device_handle,
+                                                        HID_REPORT_PROTOCOL_REPORT));
+      }
       if (HID_PROTOCOL_KEYBOARD == dev_params.proto) {
         ESP_ERROR_CHECK(hid_class_request_set_idle(hid_device_handle, 0, 0));
+        //        ESP_ERROR_CHECK(hid_class_request_set_protocol(hid_device_handle,HID_REPORT_PROTOCOL_BOOT));
       }
     }
+
     ESP_ERROR_CHECK(hid_host_device_start(hid_device_handle));
       if (dev_params.proto == HID_PROTOCOL_KEYBOARD) {
           ESP_LOGI(TAG, "Keyboard connected, turning on numpad LED");
@@ -589,7 +630,6 @@ void setup() {
 void loop() {
   if(bleMouse.isConnected()) {
     //Serial.println("Moving mouse");
-    
     //Move mouse in a circle
     //bleMouse.move(10, 0);   // Move right
     //delay(100);
@@ -599,17 +639,6 @@ void loop() {
     //delay(100);
     //bleMouse.move(0, -10);  // Move up
     //delay(100);
-    
-    // Click examples
-    // bleMouse.click(MOUSE_LEFT);
-    // bleMouse.click(MOUSE_RIGHT);
-    // bleMouse.click(MOUSE_MIDDLE);
-    
-    // Scroll examples
-    // bleMouse.move(0, 0, 1);  // Scroll up
-    // bleMouse.move(0, 0, -1); // Scroll down
-
-
   }
   delay(1000);
 }
