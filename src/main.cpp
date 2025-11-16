@@ -1,7 +1,10 @@
 #include <Arduino.h>
 #include <BleMouse.h>
+#include <BLEDevice.h>
 
-BleMouse bleMouse;
+BleMouse bleMouse("Assistronik USB Adapter","Assistronik");
+//BleMouse bleMouse;
+
 /*
  * SPDX-FileCopyrightText: 2022-2023 Espressif Systems (Shanghai) CO LTD
  * SPDX-License-Identifier: Unlicense OR CC0-1.0
@@ -712,6 +715,9 @@ void loop() {
     //restart
     esp_restart();
   }
+
+  //TODO: stop advertising after x seconds?
+  //BLEDevice::getAdvertising()->stop();
 
   delay(20);
 }
