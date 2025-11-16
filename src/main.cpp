@@ -7,7 +7,6 @@ BleMouse bleMouse;
  * SPDX-License-Identifier: Unlicense OR CC0-1.0
  */
 
-#include "driver/gpio.h"
 #include "usb/usb_host.h"
 
 #include "hid_host.h"
@@ -453,7 +452,6 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
   case HID_HOST_DRIVER_EVENT_CONNECTED: {
     ESP_LOGI(TAG, "HID Device, protocol '%s' CONNECTED",
              hid_proto_name_str[dev_params.proto]);
-
     ESP_ERROR_CHECK(hid_host_device_open(hid_device_handle, &dev_config));
 
 
@@ -462,6 +460,7 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
         ESP_LOGI(TAG, "Setting mouse to REPORT protocol mode");
         ESP_ERROR_CHECK(hid_class_request_set_protocol(hid_device_handle,
                                                         HID_REPORT_PROTOCOL_REPORT));
+        digitalWrite(LED_BUILTIN,LOW);
       }
       if (HID_PROTOCOL_KEYBOARD == dev_params.proto) {
         ESP_ERROR_CHECK(hid_class_request_set_idle(hid_device_handle, 0, 0));
@@ -480,6 +479,7 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
               &led,
               sizeof(led)
           );
+          digitalWrite(LED_BUILTIN,LOW);
           ESP_LOGI(TAG, "SET_REPORT returned %s", esp_err_to_name(err));
       }
     }
@@ -496,13 +496,6 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
  * @param[in] arg  Not used
  */
 static void usb_lib_task(void *arg) {
-  const gpio_config_t input_pin = {
-      .pin_bit_mask = BIT64(APP_QUIT_PIN),
-      .mode = GPIO_MODE_INPUT,
-      .pull_up_en = GPIO_PULLUP_ENABLE,
-  };
-  ESP_ERROR_CHECK(gpio_config(&input_pin));
-
   const usb_host_config_t host_config = {
       .skip_phy_setup = false,
       .intr_flags = ESP_INTR_FLAG_LEVEL1,
@@ -511,7 +504,7 @@ static void usb_lib_task(void *arg) {
   ESP_ERROR_CHECK(usb_host_install(&host_config));
   xTaskNotifyGive((TaskHandle_t)arg);
 
-  while (gpio_get_level(APP_QUIT_PIN) != 0) {
+  while (true) {
     uint32_t event_flags;
     usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
 
@@ -523,11 +516,9 @@ static void usb_lib_task(void *arg) {
     // All devices were removed
     if (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
       ESP_LOGI(TAG, "USB Event flags: ALL_FREE");
+      digitalWrite(LED_BUILTIN,HIGH);
     }
   }
-  // App Button was pressed, trigger the flag
-  user_shutdown = true;
-  ESP_LOGI(TAG, "USB shutdown");
   // Clean up USB Host
   vTaskDelay(10); // Short delay to allow clients clean-up
   ESP_ERROR_CHECK(usb_host_uninstall());
@@ -620,14 +611,70 @@ void app_main(void) {
   assert(task_created == pdTRUE);
 }
 
+
+void unbond_all_devices() {
+    int dev_num = 0;  // To store the number of bonded devices
+    esp_ble_bond_dev_t *dev_list = NULL;
+
+    // Get the number of bonded devices
+    dev_num = esp_ble_get_bond_device_num();
+    if (dev_num == 0) {
+        ESP_LOGI("UNBOND", "No bonded devices found");
+        return;
+    }
+
+    // Allocate memory to hold the list of bonded devices
+    dev_list = (esp_ble_bond_dev_t*)malloc(dev_num * sizeof(esp_ble_bond_dev_t));
+    if (dev_list == NULL) {
+        ESP_LOGE("UNBOND", "Failed to allocate memory for device list");
+        return;
+    }
+
+    // Get the list of bonded devices
+    esp_err_t err = esp_ble_get_bond_device_list(&dev_num, dev_list);
+    if (err != ESP_OK) {
+        ESP_LOGE("UNBOND", "Failed to get bonded device list");
+        free(dev_list);
+        return;
+    }
+
+    // Iterate over each bonded device and unbond it
+    for (int i = 0; i < dev_num; i++) {
+        esp_ble_bond_dev_t dev = dev_list[i];
+        esp_bd_addr_t bd_addr;
+        memcpy(&bd_addr,&dev.bd_addr, sizeof(esp_bd_addr_t)); // Get the Bluetooth address of the device
+        ESP_LOGI("UNBOND", "Removing bond for device with BD_ADDR: %02x:%02x:%02x:%02x:%02x:%02x",
+                 bd_addr[0], bd_addr[1], bd_addr[2], bd_addr[3], bd_addr[4], bd_addr[5]);
+
+        err = esp_ble_remove_bond_device(bd_addr);
+        if (err == ESP_OK) {
+            ESP_LOGI("UNBOND", "Successfully removed bond for device: %02x:%02x:%02x:%02x:%02x:%02x",
+                     bd_addr[0], bd_addr[1], bd_addr[2], bd_addr[3], bd_addr[4], bd_addr[5]);
+        } else {
+            ESP_LOGE("UNBOND", "Failed to remove bond for device: %02x:%02x:%02x:%02x:%02x:%02x",
+                     bd_addr[0], bd_addr[1], bd_addr[2], bd_addr[3], bd_addr[4], bd_addr[5]);
+        }
+    }
+
+    // Free the allocated memory
+    free(dev_list);
+}
+
+
 void setup() { 
     Serial.begin(115200);
     Serial.setDebugOutput(true);
     bleMouse.begin();
+    //use internal button & LED, switch off LED
+    pinMode(GPIO_NUM_0,INPUT_PULLUP);
+    pinMode(LED_BUILTIN,OUTPUT);
+    digitalWrite(LED_BUILTIN,HIGH);
+    //start main USB/HID task
     app_main(); 
 }
 
 void loop() {
+  static long lastbuttonPress = 0;
   if(bleMouse.isConnected()) {
     //Serial.println("Moving mouse");
     //Move mouse in a circle
@@ -640,5 +687,31 @@ void loop() {
     //bleMouse.move(0, -10);  // Move up
     //delay(100);
   }
-  delay(1000);
+
+  //button press
+  if(digitalRead(GPIO_NUM_0) == LOW && lastbuttonPress == 0) {
+    lastbuttonPress = millis();
+    digitalWrite(LED_BUILTIN,LOW);
+  }
+  //button release
+  if(digitalRead(GPIO_NUM_0) == HIGH) {
+    lastbuttonPress = 0;
+  }
+
+  if(lastbuttonPress && (millis() - lastbuttonPress > 1000)) {
+    Serial.println("Reset pairings");
+    unbond_all_devices();
+    lastbuttonPress = 0;
+    //blink a few times
+    for(int i = 0; i<5; i++) {
+      digitalWrite(LED_BUILTIN,LOW);
+      delay(250);
+      digitalWrite(LED_BUILTIN,HIGH);
+      delay(250);
+    }
+    //restart
+    esp_restart();
+  }
+
+  delay(20);
 }
