@@ -43,6 +43,25 @@ typedef struct {
 
 static mouse_report_format_t mouse_format = {0};
 
+// Structure to store parsed HID joystick/gamepad report format
+typedef struct {
+    bool is_valid;
+
+    int x_bit_offset;
+    int x_bits;
+    bool x_signed;
+
+    int y_bit_offset;
+    int y_bits;
+    bool y_signed;
+
+    int buttons_bit_offset;
+    int buttons_bits;
+    int button_count;
+} joystick_report_format_t;
+
+static joystick_report_format_t joystick_format = {0};
+
 /**
  * Extract integer value of size_bits starting at bit_offset (LSB = bit 0 of
  * data[0])
@@ -299,6 +318,186 @@ static bool parse_mouse_report_descriptor(const uint8_t* desc, size_t desc_len,
 }
 
 /**
+ * Parse HID report descriptor for joystick/gamepad:
+ * - Usage Page 0x01 (Generic Desktop) axes X/Y
+ * - Usage Page 0x09 (Button) for buttons
+ */
+static bool parse_joystick_report_descriptor(const uint8_t* desc,
+                                             size_t desc_len,
+                                             joystick_report_format_t* fmt) {
+    memset(fmt, 0, sizeof(*fmt));
+
+    int bit_offset = 0;
+    int report_size = 0;   // bits per field
+    int report_count = 0;  // # fields
+    uint16_t usage_page = 0;
+
+    uint16_t usages[16];
+    int usage_count = 0;
+    uint16_t usage_min = 0;
+    uint16_t usage_max = 0;
+    bool have_usage_range = false;
+
+    bool found_x = false, found_y = false, found_buttons = false;
+
+    ESP_LOGI(TAG, "Parsing HID joystick report descriptor (%u bytes)",
+             (unsigned)desc_len);
+
+    for (size_t i = 0; i < desc_len;) {
+        uint8_t b = desc[i++];
+
+        if ((b & 0xF0) == 0xF0) {
+            // Long item
+            if (i + 1 >= desc_len) break;
+            uint8_t data_len = desc[i++];
+            uint8_t long_tag = desc[i++];
+            (void)long_tag;
+            i += data_len;
+            continue;
+        }
+
+        uint8_t size = b & 0x03;
+        uint8_t type = (b >> 2) & 0x03;
+        uint8_t tag = (b >> 4) & 0x0F;
+
+        if (size == 3) size = 4;
+
+        uint32_t data = 0;
+        for (uint8_t n = 0; n < size && i < desc_len; ++n) {
+            data |= (uint32_t)desc[i++] << (8 * n);
+        }
+
+        switch (type) {
+            case 0:  // Main
+                if (tag == 0x08) {  // Input
+                    if (usage_page == 0x09) {  // Button page
+                        if (!found_buttons && report_count > 0 &&
+                            report_size == 1) {
+                            fmt->buttons_bit_offset = bit_offset;
+                            fmt->buttons_bits = report_count;
+                            fmt->button_count = report_count;
+                            found_buttons = true;
+                            ESP_LOGI(TAG,
+                                     "Joystick buttons: bit_offset=%d bits=%d",
+                                     fmt->buttons_bit_offset,
+                                     fmt->buttons_bits);
+                        }
+                    } else if (usage_page == 0x01) {  // Generic Desktop: axes
+                        int field_bit = bit_offset;
+
+                        // 1) explicit usages
+                        for (int u = 0; u < usage_count; ++u) {
+                            uint16_t uval = usages[u];
+
+                            if (!found_x && uval == 0x30) {  // X
+                                fmt->x_bit_offset = field_bit;
+                                fmt->x_bits = report_size;
+                                fmt->x_signed = true;  // typical joystick axes
+                                found_x = true;
+                                ESP_LOGI(TAG,
+                                         "Joystick X: bit_offset=%d bits=%d",
+                                         fmt->x_bit_offset, fmt->x_bits);
+                            } else if (!found_y && uval == 0x31) {  // Y
+                                fmt->y_bit_offset = field_bit;
+                                fmt->y_bits = report_size;
+                                fmt->y_signed = true;
+                                found_y = true;
+                                ESP_LOGI(TAG,
+                                         "Joystick Y: bit_offset=%d bits=%d",
+                                         fmt->y_bit_offset, fmt->y_bits);
+                            }
+
+                            field_bit += report_size;
+                        }
+
+                        // 2) usage range
+                        if (usage_count == 0 && have_usage_range) {
+                            uint16_t u = usage_min;
+                            for (int idx = 0; idx < report_count;
+                                 ++idx, ++u) {
+                                int obit = bit_offset + idx * report_size;
+                                if (!found_x && u == 0x30) {
+                                    fmt->x_bit_offset = obit;
+                                    fmt->x_bits = report_size;
+                                    fmt->x_signed = true;
+                                    found_x = true;
+                                    ESP_LOGI(TAG,
+                                             "Joystick X(range): bit_offset=%d "
+                                             "bits=%d",
+                                             fmt->x_bit_offset, fmt->x_bits);
+                                } else if (!found_y && u == 0x31) {
+                                    fmt->y_bit_offset = obit;
+                                    fmt->y_bits = report_size;
+                                    fmt->y_signed = true;
+                                    found_y = true;
+                                    ESP_LOGI(TAG,
+                                             "Joystick Y(range): bit_offset=%d "
+                                             "bits=%d",
+                                             fmt->y_bit_offset, fmt->y_bits);
+                                }
+                            }
+                        }
+                    }
+
+                    bit_offset += report_size * report_count;
+
+                    usage_count = 0;
+                    usage_min = 0;
+                    usage_max = 0;
+                    have_usage_range = false;
+                }
+                break;
+
+            case 1:  // Global
+                switch (tag) {
+                    case 0x0:  // Usage Page
+                        usage_page = (uint16_t)data;
+                        break;
+                    case 0x7:  // Report Size
+                        report_size = (int)data;
+                        break;
+                    case 0x9:  // Report Count
+                        report_count = (int)data;
+                        break;
+                    default:
+                        break;
+                }
+                break;
+
+            case 2:  // Local
+                switch (tag) {
+                    case 0x0:  // Usage
+                        if (usage_count <
+                            (int)(sizeof(usages) / sizeof(usages[0]))) {
+                            usages[usage_count++] = (uint16_t)data;
+                        }
+                        break;
+                    case 0x1:  // Usage Min
+                        usage_min = (uint16_t)data;
+                        have_usage_range = true;
+                        break;
+                    case 0x2:  // Usage Max
+                        usage_max = (uint16_t)data;
+                        have_usage_range = true;
+                        (void)usage_max;
+                        break;
+                    default:
+                        break;
+                }
+                break;
+        }
+    }
+
+    fmt->is_valid = found_x && found_y && found_buttons;
+    ESP_LOGI(TAG,
+             "Parsed joystick format: valid=%d, btn_off=%d bits, "
+             "x_off=%d bits, y_off=%d bits",
+             fmt->is_valid, fmt->buttons_bit_offset, fmt->x_bit_offset,
+             fmt->y_bit_offset);
+    return fmt->is_valid;
+}
+
+/**
  * @brief Extract signed integer from byte array with bit-level precision
  */
 static int32_t extract_signed_int(const uint8_t* data, int bit_offset,
@@ -368,6 +567,47 @@ static bool parse_custom_mouse_report(const uint8_t* data, int length,
 
     ESP_LOGD(TAG, "Parsed report: btns=0x%X X=%d Y=%d Wheel=%d", (unsigned)btns,
              out->x_displacement, out->y_displacement, out->scroll_wheel);
+    return true;
+}
+
+/**
+ * @brief Parse joystick/gamepad input report into unified mouse report
+ * First stick X/Y + first 3 buttons → unified_mouseReport_t
+ */
+static bool parse_joystick_report(const uint8_t* data, int length,
+                                  unified_mouseReport_t* out) {
+    if (!joystick_format.is_valid) return false;
+
+    memset(out, 0, sizeof(*out));
+
+    int32_t btns =
+        hid_extract_int(data, length, joystick_format.buttons_bit_offset,
+                        joystick_format.buttons_bits, false);
+    out->buttons.button1 = (btns & 0x01) != 0;
+    out->buttons.button2 = (btns & 0x02) != 0;
+    out->buttons.button3 = (btns & 0x04) != 0;
+
+    int16_t x = (int16_t)hid_extract_int(
+        data, length, joystick_format.x_bit_offset, joystick_format.x_bits,
+        joystick_format.x_signed);
+    int16_t y = (int16_t)hid_extract_int(
+        data, length, joystick_format.y_bit_offset, joystick_format.y_bits,
+        joystick_format.y_signed);
+
+    // basic deadzone & scaling to behave more like mouse deltas
+    const int16_t deadzone = 4;
+    if (x > -deadzone && x < deadzone) x = 0;
+    if (y > -deadzone && y < deadzone) y = 0;
+
+    x /= 8;
+    y /= 8;
+
+    out->x_displacement = x;
+    out->y_displacement = y;
+    out->scroll_wheel = 0;
+
+    ESP_LOGD(TAG, "Joystick->Mouse: btns=0x%X X=%d Y=%d", (unsigned)btns,
+             out->x_displacement, out->y_displacement);
     return true;
 }
 
@@ -707,6 +947,29 @@ static void hid_host_mouse_report_callback(const uint8_t* const data,
  */
 static void hid_host_generic_report_callback(const uint8_t* const data,
                                              const int length) {
+    // First, try to interpret generic HID as joystick -> mouse
+    if (joystick_format.is_valid) {
+        unified_mouseReport_t unified_mouseReport;
+        if (parse_joystick_report(data, length, &unified_mouseReport)) {
+#ifdef OUTPUT_USB_MOUSE_REPORT_DEBUG_MESSAGES
+            hid_print_new_device_report_header(HID_PROTOCOL_MOUSE);
+            printf("Joy->Mouse X: %06d\tY: %06d\t|%c|%c|%c|\t%d\n",
+                   unified_mouseReport.x_displacement,
+                   unified_mouseReport.y_displacement,
+                   (unified_mouseReport.buttons.button1 ? 'L' : ' '),
+                   (unified_mouseReport.buttons.button3 ? 'M' : ' '),
+                   (unified_mouseReport.buttons.button2 ? 'R' : ' '),
+                   unified_mouseReport.scroll_wheel);
+            fflush(stdout);
+#endif
+            if (registered_mouse_callback != NULL) {
+                registered_mouse_callback(&unified_mouseReport);
+            }
+            return;
+        }
+    }
+
+    // Fallback: just hex-dump the report
     hid_print_new_device_report_header(HID_PROTOCOL_NONE);
     for (int i = 0; i < length; i++) {
         printf("%02X", data[i]);
@@ -750,6 +1013,7 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
         case HID_HOST_INTERFACE_EVENT_DISCONNECTED:
             ESP_LOGI(TAG, "HID Device, protocol '%s' DISCONNECTED",
                      hid_proto_name_str[dev_params.proto]);
+            joystick_format.is_valid = false;  // reset joystick mapping
             ESP_ERROR_CHECK(hid_host_device_close(hid_device_handle));
             break;
         case HID_HOST_INTERFACE_EVENT_TRANSFER_ERROR:
@@ -764,7 +1028,7 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
 }
 
 /**
- * @brief USB HID Host Device event
+ * @brief HID Host Device event
  *
  * @param[in] hid_device_handle  HID Device handle
  * @param[in] event              HID Host Device event
@@ -814,9 +1078,7 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
                                      "Failed to parse mouse report descriptor");
                         }
 
-                        // Note: Check if we need to free the report descriptor
-                        // Some implementations return a pointer that needs to
-                        // be freed free(report_desc); // Uncomment if needed
+                        // free(report_desc); // Uncomment if needed
                     } else {
                         ESP_LOGW(TAG,
                                  "Could not get report descriptor (NULL or "
@@ -837,6 +1099,35 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
                     ESP_ERROR_CHECK(
                         hid_class_request_set_idle(hid_device_handle, 0, 0));
                     //        ESP_ERROR_CHECK(hid_class_request_set_protocol(hid_device_handle,HID_REPORT_PROTOCOL_BOOT));
+                }
+            } else {
+                // Non-boot HID: attempt to treat as joystick/gamepad
+                ESP_LOGI(TAG,
+                         "Non-boot HID device, checking for joystick/gamepad");
+                size_t report_desc_len = 0;
+                uint8_t* report_desc = hid_host_get_report_descriptor(
+                    hid_device_handle, &report_desc_len);
+
+                if (report_desc != NULL && report_desc_len > 0) {
+                    if (parse_joystick_report_descriptor(
+                            report_desc, report_desc_len, &joystick_format)) {
+                        ESP_LOGI(TAG,
+                                 "Joystick/Gamepad descriptor parsed; "
+                                 "generic reports will be mapped to mouse");
+                        // Joystick usually uses report protocol by default
+                        // If needed:
+                        // ESP_ERROR_CHECK(hid_class_request_set_protocol(
+                        //     hid_device_handle, HID_REPORT_PROTOCOL_REPORT));
+                    } else {
+                        ESP_LOGI(TAG,
+                                 "Non-boot HID is not recognized as joystick/"
+                                 "gamepad");
+                        joystick_format.is_valid = false;
+                    }
+                    // free(report_desc); // Uncomment if API requires
+                } else {
+                    ESP_LOGW(TAG,
+                             "Could not get report descriptor for non-boot HID");
                 }
             }
 
