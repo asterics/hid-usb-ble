@@ -3,11 +3,13 @@
 #include <BleMouse.h>
 #include <BLEDevice.h>
 #include "usb_host.h"
+#include "usb_hid_common.h"
+
+#define OUTPUT_UNIFIED_MOUSE_DATA_TO_CONSOLE
 
 BleMouse bleMouse("Assistronik USB Adapter","Assistronik");
 
-
-void update_mouseState(unified_mouseReport_t *mouse_report) {
+void update_mouseState (unified_mouseReport_t *mouse_report) {
 
   static int x_pos = 0;
   static int y_pos = 0;
@@ -15,6 +17,19 @@ void update_mouseState(unified_mouseReport_t *mouse_report) {
   // Calculate absolute position from displacement
   x_pos += mouse_report->x_displacement;
   y_pos += mouse_report->y_displacement;
+
+  #ifdef OUTPUT_UNIFIED_MOUSE_DATA_TO_CONSOLE
+      hid_print_new_device_report_header(HID_PROTOCOL_MOUSE);
+
+      printf("X: %06d\tY: %06d\t|%c|%c|%c|\t%d\n",
+          mouse_report->x_displacement,
+          mouse_report->y_displacement,
+          (mouse_report->buttons.button1 ? 'L' : ' '),
+          (mouse_report->buttons.button3 ? 'M' : ' '),
+          (mouse_report->buttons.button2 ? 'R' : ' '),
+          mouse_report->scroll_wheel);
+      fflush(stdout);
+  #endif
 
   if(bleMouse.isConnected()) {
     static bool leftButtonPressed = false;
@@ -131,24 +146,13 @@ void setup() {
 
 void loop() {
   static long lastbuttonPress = 0;
-  if(bleMouse.isConnected()) {
-    //Serial.println("Moving mouse");
-    //Move mouse in a circle
-    //bleMouse.move(10, 0);   // Move right
-    //delay(100);
-    //bleMouse.move(0, 10);   // Move down
-    //delay(100);
-    //bleMouse.move(-10, 0);  // Move left
-    //delay(100);
-    //bleMouse.move(0, -10);  // Move up
-    //delay(100);
-  }
-
+  
   //button press
   if(digitalRead(GPIO_NUM_0) == LOW && lastbuttonPress == 0) {
     lastbuttonPress = millis();
     digitalWrite(LED_BUILTIN,LOW);
   }
+
   //button release
   if(digitalRead(GPIO_NUM_0) == HIGH) {
     lastbuttonPress = 0;
@@ -171,6 +175,15 @@ void loop() {
 
   //TODO: stop advertising after x seconds?
   //BLEDevice::getAdvertising()->stop();
+
+  /*  
+  // indicate connection status
+  if(bleMouse.isConnected()) {
+    digitalWrite(LED_BUILTIN,HIGH);
+  } else {
+    digitalWrite(LED_BUILTIN,LOW);
+  }
+  */
 
   delay(20);
 }
