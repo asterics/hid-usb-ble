@@ -23,6 +23,9 @@ bool user_shutdown = false;
 typedef struct {
     bool is_valid;
 
+    // report ID (0 if not used)
+    int reportid;
+
     // All offsets are in *bits*.
     int buttons_bit_offset;
     int buttons_bits;  // usually = button_count
@@ -101,6 +104,7 @@ static bool parse_mouse_report_descriptor(const uint8_t* desc, size_t desc_len,
     int bit_offset = 0;
     int report_size = 0;   // bits
     int report_count = 0;  // fields
+    int report_id = 0;  // report id
     uint16_t usage_page = 0;
 
     // local state
@@ -113,7 +117,7 @@ static bool parse_mouse_report_descriptor(const uint8_t* desc, size_t desc_len,
     bool found_x = false, found_y = false, found_buttons = false,
          found_wheel = false;
 
-    ESP_LOGI(TAG, "Parsing HID report descriptor (%u bytes)",
+    ESP_LOGI(TAG, "Parsing HID Mouse report descriptor (%u bytes)",
              (unsigned)desc_len);
     ESP_LOGI(TAG, "Raw descriptor:");
     for (size_t i = 0; i < desc_len; i += 16) {
@@ -280,6 +284,9 @@ static bool parse_mouse_report_descriptor(const uint8_t* desc, size_t desc_len,
                     case 0x9:  // Report Count
                         report_count = (int)data;
                         break;
+                    case 0x8:  // Report ID
+                        report_id = (int)data;
+                        break;
                     default:
                         break;
                 }
@@ -309,10 +316,18 @@ static bool parse_mouse_report_descriptor(const uint8_t* desc, size_t desc_len,
     }
 
     fmt->is_valid = found_x && found_y && found_buttons;
+    fmt->reportid = report_id;
+    //offset all fields by 1Byte if report id is found:
+    if(fmt->reportid > 0) {
+        fmt->buttons_bit_offset += 8;
+        fmt->x_bit_offset += 8;
+        fmt->y_bit_offset += 8;
+        fmt->wheel_bit_offset += 8;
+    }
     ESP_LOGI(TAG,
-             "Parsed mouse format: valid=%d, btn_off=%d bits, x_off=%d bits, "
+             "Parsed mouse format: valid=%d, reportid=%d, btn_off=%d bits, x_off=%d bits, "
              "y_off=%d bits, wheel_off=%d bits",
-             fmt->is_valid, fmt->buttons_bit_offset, fmt->x_bit_offset,
+             fmt->is_valid, fmt->reportid, fmt->buttons_bit_offset, fmt->x_bit_offset,
              fmt->y_bit_offset, fmt->wheel_bit_offset);
     return fmt->is_valid;
 }
@@ -328,9 +343,10 @@ static bool parse_joystick_report_descriptor(const uint8_t* desc,
     memset(fmt, 0, sizeof(*fmt));
 
     int bit_offset = 0;
-    int report_size = 0;   // bits per field
-    int report_count = 0;  // # fields
+    int report_size = 0;
+    int report_count = 0;
     uint16_t usage_page = 0;
+    bool report_id_found = false;
 
     uint16_t usages[16];
     int usage_count = 0;
@@ -342,12 +358,20 @@ static bool parse_joystick_report_descriptor(const uint8_t* desc,
 
     ESP_LOGI(TAG, "Parsing HID joystick report descriptor (%u bytes)",
              (unsigned)desc_len);
+    ESP_LOGI(TAG, "Raw descriptor:");
+    for (size_t i = 0; i < desc_len; i += 16) {
+        char line[80];
+        int pos = 0;
+        for (size_t j = i; j < desc_len && j < i + 16; ++j) {
+            pos += snprintf(line + pos, sizeof(line) - pos, "%02X ", desc[j]);
+        }
+        ESP_LOGI(TAG, "%04u: %s", (unsigned)i, line);
+    }
 
     for (size_t i = 0; i < desc_len;) {
         uint8_t b = desc[i++];
 
         if ((b & 0xF0) == 0xF0) {
-            // Long item
             if (i + 1 >= desc_len) break;
             uint8_t data_len = desc[i++];
             uint8_t long_tag = desc[i++];
@@ -368,9 +392,9 @@ static bool parse_joystick_report_descriptor(const uint8_t* desc,
         }
 
         switch (type) {
-            case 0:  // Main
-                if (tag == 0x08) {  // Input
-                    if (usage_page == 0x09) {  // Button page
+            case 0: // Main
+                if (tag == 0x08) { // Input
+                    if (usage_page == 0x09) { // Button Page
                         if (!found_buttons && report_count > 0 &&
                             report_size == 1) {
                             fmt->buttons_bit_offset = bit_offset;
@@ -382,22 +406,21 @@ static bool parse_joystick_report_descriptor(const uint8_t* desc,
                                      fmt->buttons_bit_offset,
                                      fmt->buttons_bits);
                         }
-                    } else if (usage_page == 0x01) {  // Generic Desktop: axes
+                    } else if (usage_page == 0x01) { // Generic Desktop Page
                         int field_bit = bit_offset;
 
-                        // 1) explicit usages
                         for (int u = 0; u < usage_count; ++u) {
                             uint16_t uval = usages[u];
 
-                            if (!found_x && uval == 0x30) {  // X
+                            if (!found_x && uval == 0x30) { // X-Axis
                                 fmt->x_bit_offset = field_bit;
                                 fmt->x_bits = report_size;
-                                fmt->x_signed = true;  // typical joystick axes
+                                fmt->x_signed = true;
                                 found_x = true;
                                 ESP_LOGI(TAG,
                                          "Joystick X: bit_offset=%d bits=%d",
                                          fmt->x_bit_offset, fmt->x_bits);
-                            } else if (!found_y && uval == 0x31) {  // Y
+                            } else if (!found_y && uval == 0x31) { // Y-Axis
                                 fmt->y_bit_offset = field_bit;
                                 fmt->y_bits = report_size;
                                 fmt->y_signed = true;
@@ -406,36 +429,8 @@ static bool parse_joystick_report_descriptor(const uint8_t* desc,
                                          "Joystick Y: bit_offset=%d bits=%d",
                                          fmt->y_bit_offset, fmt->y_bits);
                             }
-
+                            // Note: Other axes (Z, Rx, etc.) are ignored by this parser.
                             field_bit += report_size;
-                        }
-
-                        // 2) usage range
-                        if (usage_count == 0 && have_usage_range) {
-                            uint16_t u = usage_min;
-                            for (int idx = 0; idx < report_count;
-                                 ++idx, ++u) {
-                                int obit = bit_offset + idx * report_size;
-                                if (!found_x && u == 0x30) {
-                                    fmt->x_bit_offset = obit;
-                                    fmt->x_bits = report_size;
-                                    fmt->x_signed = true;
-                                    found_x = true;
-                                    ESP_LOGI(TAG,
-                                             "Joystick X(range): bit_offset=%d "
-                                             "bits=%d",
-                                             fmt->x_bit_offset, fmt->x_bits);
-                                } else if (!found_y && u == 0x31) {
-                                    fmt->y_bit_offset = obit;
-                                    fmt->y_bits = report_size;
-                                    fmt->y_signed = true;
-                                    found_y = true;
-                                    ESP_LOGI(TAG,
-                                             "Joystick Y(range): bit_offset=%d "
-                                             "bits=%d",
-                                             fmt->y_bit_offset, fmt->y_bits);
-                                }
-                            }
                         }
                     }
 
@@ -448,15 +443,24 @@ static bool parse_joystick_report_descriptor(const uint8_t* desc,
                 }
                 break;
 
-            case 1:  // Global
+            case 1: // Global
                 switch (tag) {
-                    case 0x0:  // Usage Page
+                    case 0x0: // Usage Page
                         usage_page = (uint16_t)data;
                         break;
-                    case 0x7:  // Report Size
+                    case 0x7: // Report Size
                         report_size = (int)data;
                         break;
-                    case 0x9:  // Report Count
+                    case 0x8: // Report ID
+                        if (!report_id_found) {
+                            // This should only happen once at the start.
+                            // If a Report ID is present, all data is offset by 8 bits.
+                            bit_offset = 8;
+                            report_id_found = true;
+                            ESP_LOGI(TAG, "Report ID found (%u), setting initial bit_offset to 8", (unsigned)data);
+                        }
+                        break;
+                    case 0x9: // Report Count
                         report_count = (int)data;
                         break;
                     default:
@@ -464,22 +468,21 @@ static bool parse_joystick_report_descriptor(const uint8_t* desc,
                 }
                 break;
 
-            case 2:  // Local
+            case 2: // Local
                 switch (tag) {
-                    case 0x0:  // Usage
+                    case 0x0: // Usage
                         if (usage_count <
                             (int)(sizeof(usages) / sizeof(usages[0]))) {
                             usages[usage_count++] = (uint16_t)data;
                         }
                         break;
-                    case 0x1:  // Usage Min
+                    case 0x1: // Usage Min
                         usage_min = (uint16_t)data;
                         have_usage_range = true;
                         break;
-                    case 0x2:  // Usage Max
+                    case 0x2: // Usage Max
                         usage_max = (uint16_t)data;
                         have_usage_range = true;
-                        (void)usage_max;
                         break;
                     default:
                         break;
@@ -490,8 +493,8 @@ static bool parse_joystick_report_descriptor(const uint8_t* desc,
 
     fmt->is_valid = found_x && found_y && found_buttons;
     ESP_LOGI(TAG,
-             "Parsed joystick format: valid=%d, btn_off=%d bits, "
-             "x_off=%d bits, y_off=%d bits",
+             "Parsed joystick format: valid=%d, btn_off=%d bits, x_off=%d bits, "
+             "y_off=%d bits",
              fmt->is_valid, fmt->buttons_bit_offset, fmt->x_bit_offset,
              fmt->y_bit_offset);
     return fmt->is_valid;
@@ -578,15 +581,20 @@ static bool parse_joystick_report(const uint8_t* data, int length,
                                   unified_mouseReport_t* out) {
     if (!joystick_format.is_valid) return false;
 
+    // Check for Report ID. If present, the actual data starts from the second byte.
+    // The bit offsets from the parser already account for this.
+    // No need to shift the 'data' pointer.
+
     memset(out, 0, sizeof(*out));
 
     int32_t btns =
         hid_extract_int(data, length, joystick_format.buttons_bit_offset,
                         joystick_format.buttons_bits, false);
-    out->buttons.button1 = (btns & 0x01) != 0;
-    out->buttons.button2 = (btns & 0x02) != 0;
-    out->buttons.button3 = (btns & 0x04) != 0;
+    out->buttons.button1 = (btns & 0x01) != 0; // Button 1
+    out->buttons.button2 = (btns & 0x02) != 0; // Button 2
+    out->buttons.button3 = (btns & 0x04) != 0; // Button 3
 
+    // Extract X and Y axis values
     int16_t x = (int16_t)hid_extract_int(
         data, length, joystick_format.x_bit_offset, joystick_format.x_bits,
         joystick_format.x_signed);
@@ -594,16 +602,24 @@ static bool parse_joystick_report(const uint8_t* data, int length,
         data, length, joystick_format.y_bit_offset, joystick_format.y_bits,
         joystick_format.y_signed);
 
-    // basic deadzone & scaling to behave more like mouse deltas
-    const int16_t deadzone = 4;
-    if (x > -deadzone && x < deadzone) x = 0;
-    if (y > -deadzone && y < deadzone) y = 0;
+    // --- Convert Joystick Axis to Mouse Displacement ---
+    // The joystick gives an absolute position from -32767 to 32767.
+    // We need to convert this to small displacement values for mouse movement.
 
-    x /= 8;
-    y /= 8;
+    // Normalize to a range like -10 to 10
+    const int16_t deadzone = 4096; // ~12.5% deadzone
+    int16_t mouse_x = 0;
+    int16_t mouse_y = 0;
 
-    out->x_displacement = x;
-    out->y_displacement = y;
+    if (x > deadzone || x < -deadzone) {
+        mouse_x = (int16_t)(x / 3276.7f); // Map to -10 to 10
+    }
+    if (y > deadzone || y < -deadzone) {
+        mouse_y = (int16_t)(y / 3276.7f); // Map to -10 to 10
+    }
+
+    out->x_displacement = mouse_x;
+    out->y_displacement = mouse_y;
     out->scroll_wheel = 0;
 
     ESP_LOGD(TAG, "Joystick->Mouse: btns=0x%X X=%d Y=%d", (unsigned)btns,
