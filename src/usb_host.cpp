@@ -23,6 +23,9 @@ bool user_shutdown = false;
 typedef struct {
     bool is_valid;
 
+    // report ID (0 if not used)
+    int reportid;
+
     // All offsets are in *bits*.
     int buttons_bit_offset;
     int buttons_bits;  // usually = button_count
@@ -82,6 +85,7 @@ static bool parse_mouse_report_descriptor(const uint8_t* desc, size_t desc_len,
     int bit_offset = 0;
     int report_size = 0;   // bits
     int report_count = 0;  // fields
+    int report_id = 0;  // report id
     uint16_t usage_page = 0;
 
     // local state
@@ -261,6 +265,9 @@ static bool parse_mouse_report_descriptor(const uint8_t* desc, size_t desc_len,
                     case 0x9:  // Report Count
                         report_count = (int)data;
                         break;
+                    case 0x8:  // Report ID
+                        report_id = (int)data;
+                        break;
                     default:
                         break;
                 }
@@ -290,10 +297,19 @@ static bool parse_mouse_report_descriptor(const uint8_t* desc, size_t desc_len,
     }
 
     fmt->is_valid = found_x && found_y && found_buttons;
+    fmt->reportid = report_id;
+    //offset all fields by 1Byte if report id is found:
+    if(fmt->reportid > 0) {
+        fmt->buttons_bit_offset += 8;
+        fmt->x_bit_offset += 8;
+        fmt->y_bit_offset += 8;
+        fmt->wheel_bit_offset += 8;
+    }
+
     ESP_LOGI(TAG,
-             "Parsed mouse format: valid=%d, btn_off=%d bits, x_off=%d bits, "
+             "Parsed mouse format: valid=%d, reportid=%d, btn_off=%d bits, x_off=%d bits, "
              "y_off=%d bits, wheel_off=%d bits",
-             fmt->is_valid, fmt->buttons_bit_offset, fmt->x_bit_offset,
+             fmt->is_valid, fmt->reportid, fmt->buttons_bit_offset, fmt->x_bit_offset,
              fmt->y_bit_offset, fmt->wheel_bit_offset);
     return fmt->is_valid;
 }
