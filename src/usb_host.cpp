@@ -20,7 +20,7 @@ QueueHandle_t hid_host_event_queue;
 bool user_shutdown = false;
 
 // Structure to store parsed HID mouse report format
-typedef struct {
+typedef struct mouse_report_format {
     bool is_valid;
 
     // report ID (0 if not used)
@@ -266,7 +266,12 @@ static bool parse_mouse_report_descriptor(const uint8_t* desc, size_t desc_len,
                         report_count = (int)data;
                         break;
                     case 0x8:  // Report ID
-                        report_id = (int)data;
+                        //because we want to save only the reportID of the mouse usage page:
+                        //if we already found a valid set of buttons/x/y/wheel, we can assume
+                        //we don't want any following report ids saved
+                        if(!(found_x && found_y && found_buttons)) {
+                            report_id = (int)data;
+                        }
                         break;
                     default:
                         break;
