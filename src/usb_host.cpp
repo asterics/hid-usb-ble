@@ -361,6 +361,14 @@ static bool parse_custom_mouse_report(const uint8_t* data, int length,
                                       unified_mouseReport_t* out) {
     if (!mouse_format.is_valid) return false;
 
+    //check if report id matches in mouse_format
+    uint8_t reportid = hid_extract_int(data,1,0,8,false);
+
+    if(mouse_format.reportid != 0 && mouse_format.reportid != reportid) {
+        ESP_LOGE(TAG,"Wrong report ID, expected %d, got %d",mouse_format.reportid,reportid);
+        return false;
+    }
+
     memset(out, 0, sizeof(*out));
 
     // Buttons: just look at first 8 bits starting at buttons_bit_offset.
