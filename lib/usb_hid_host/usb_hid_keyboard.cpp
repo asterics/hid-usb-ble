@@ -1,8 +1,8 @@
-#include "usb_hid_keyboard.h"
-
 #include <Arduino.h>
 #include <esp_log.h>
-#include "usb_hid_common.h"
+#include "usb_hid_keyboard.h"
+
+#include "usb_hid_host.h"
 
 
 #include "hid_usage_keyboard.h"

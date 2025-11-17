@@ -1,10 +1,10 @@
-#include "usb_hid_mouse.h"
-
 #include <Arduino.h>
 #include <esp_log.h>
+#include "usb_hid_mouse.h"
 
 #include "hid_usage_mouse.h"
-#include "usb_hid_common.h"
+#include "usb_hid_host.h"
+
 
 static const char* TAG = "usb-hid-mouse";
 mouse_report_format_t mouse_format = {0};

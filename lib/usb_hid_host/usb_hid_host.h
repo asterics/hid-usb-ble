@@ -29,3 +29,6 @@ mouse_report_callback_t * get_registered_mouse_callback();
 int32_t hid_extract_int(const uint8_t* data, int data_bytes, int bit_offset, int size_bits, bool is_signed);
 
 void hid_print_new_device_report_header(hid_protocol_t proto);
+
+void start_usb_host();
+

@@ -1,9 +1,8 @@
-#include "usb_hid_joystick.h"
-
 #include <Arduino.h>
 #include <esp_log.h>
+#include "usb_hid_joystick.h"
 
-#include "usb_hid_common.h"
+#include "usb_hid_host.h"
 
 static const char* TAG = "usb-hid-joystick";
 joystick_report_format_t joystick_format = {0};

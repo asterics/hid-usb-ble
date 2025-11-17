@@ -9,16 +9,81 @@
 
 #include "hid_usage_keyboard.h"
 #include "hid_usage_mouse.h"
-#include "usb_host.h"
-#include "usb_hid_common.h"
+
+#include "usb_hid_host.h"
 #include "usb_hid_keyboard.h"
 #include "usb_hid_mouse.h"
 #include "usb_hid_joystick.h"
 
-
 static const char* TAG = "usb-hid-host";
 QueueHandle_t hid_host_event_queue;
 bool user_shutdown = false;
+
+// Global callback function pointer
+static mouse_report_callback_t registered_mouse_callback = NULL;
+
+mouse_report_callback_t * get_registered_mouse_callback() {
+    return &registered_mouse_callback;
+}
+
+
+/**
+ * Extract integer value of size_bits starting at bit_offset from a HID report 
+ * (LSB = bit 0 of data[0])
+ */
+int32_t hid_extract_int(const uint8_t* data, int data_bytes,
+                               int bit_offset, int size_bits, bool is_signed) {
+    if (size_bits <= 0 || size_bits > 32) return 0;
+    if (bit_offset < 0 || bit_offset + size_bits > data_bytes * 8) return 0;
+
+    int start_byte = bit_offset / 8;
+    int start_bit = bit_offset % 8;
+
+    // Read up to 5 bytes into a 64-bit temp (enough for 32 bits at any bit
+    // offset)
+    uint64_t tmp = 0;
+    int needed_bytes = (start_bit + size_bits + 7) / 8;
+    for (int i = 0; i < needed_bytes; ++i) {
+        tmp |= (uint64_t)data[start_byte + i] << (8 * i);
+    }
+
+    tmp >>= start_bit;
+    uint32_t val =
+        (uint32_t)(tmp &
+                   ((size_bits == 32) ? 0xFFFFFFFFu : ((1u << size_bits) - 1)));
+
+    if (is_signed && size_bits < 32 && (val & (1u << (size_bits - 1)))) {
+        val |= ~((1u << size_bits) - 1);  // sign extend
+    }
+
+    return (int32_t)val;
+}
+
+
+
+/**
+ * @brief Makes new line depending on report output protocol type
+ *
+ * @param[in] proto Current protocol to output
+ */
+void hid_print_new_device_report_header(hid_protocol_t proto) {
+    static hid_protocol_t prev_proto_output = HID_PROTOCOL_MAX;
+
+    if (prev_proto_output != proto) {
+        prev_proto_output = proto;
+        printf("\r\n");
+        if (proto == HID_PROTOCOL_MOUSE) {
+            printf("Mouse\r\n");
+        } else if (proto == HID_PROTOCOL_KEYBOARD) {
+            printf("Keyboard\r\n");
+        } else if (proto == HID_PROTOCOL_JOYSTICK) {
+            printf("Joystick/Gamepad\r\n");
+        } else {
+            printf("Generic\r\n");
+        }
+        fflush(stdout);
+    }
+}
 
 
 /**
@@ -71,14 +136,17 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
 
             if (HID_SUBCLASS_BOOT_INTERFACE == dev_params.sub_class) {
                 if (HID_PROTOCOL_KEYBOARD == dev_params.proto) {
+                    hid_print_new_device_report_header(HID_PROTOCOL_KEYBOARD);
                     hid_host_keyboard_report_callback(data, data_length);
                 } else if (HID_PROTOCOL_MOUSE == dev_params.proto) {
+                    hid_print_new_device_report_header(HID_PROTOCOL_MOUSE);
                     hid_host_mouse_report_callback(data, data_length);
                 }
             } else {
                 // try joystick report callback first
-                if (!hid_host_joystick_report_callback(data, data_length)){
-
+                if (hid_host_joystick_report_callback(data, data_length)){
+                    hid_print_new_device_report_header(HID_PROTOCOL_JOYSTICK);
+                } else {
                     // Fallback: if no joystick report handled, just hex-dump the generic report
                     hid_print_new_device_report_header(HID_PROTOCOL_NONE);
                     for (int i = 0; i < data_length; i++) {
@@ -130,9 +198,7 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
 
             if (HID_SUBCLASS_BOOT_INTERFACE == dev_params.sub_class) {
                 if (HID_PROTOCOL_MOUSE == dev_params.proto) {
-                    ESP_LOGI(
-                        TAG,
-                        "Mouse device detected, parsing report descriptor...");
+                    ESP_LOGI(TAG,"Mouse device detected, parsing report descriptor...");
 
                     // Try to get and parse the HID report descriptor
                     size_t report_desc_len = 0;
@@ -147,27 +213,21 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
 
                         if (parse_mouse_report_descriptor(
                                 report_desc, report_desc_len, get_mouse_format())) {
-                            ESP_LOGI(TAG,
-                                     "Successfully parsed mouse report "
-                                     "descriptor, using report protocol");
+                            ESP_LOGI(TAG, "Successfully parsed mouse report descriptor, using report protocol");
                             ESP_ERROR_CHECK(hid_class_request_set_protocol(
                                 hid_device_handle, HID_REPORT_PROTOCOL_REPORT));
                             use_boot_protocol = false;
                         } else {
-                            ESP_LOGW(TAG,
-                                     "Failed to parse mouse report descriptor");
+                            ESP_LOGW(TAG, "Failed to parse mouse report descriptor");
                         }
 
                         // free(report_desc); // Uncomment if needed
                     } else {
-                        ESP_LOGW(TAG,
-                                 "Could not get report descriptor (NULL or "
-                                 "length=0)");
+                        ESP_LOGW(TAG, "Could not get report descriptor (NULL or length=0)");
                     }
 
                     if (use_boot_protocol) {
-                        ESP_LOGI(TAG,
-                                 "Falling back to boot protocol for mouse");
+                        ESP_LOGI(TAG, "Falling back to boot protocol for mouse");
                         ESP_ERROR_CHECK(hid_class_request_set_protocol(
                             hid_device_handle, HID_REPORT_PROTOCOL_BOOT));
                         get_mouse_format()->is_valid =
@@ -182,8 +242,7 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
                 }
             } else {
                 // Non-boot HID: attempt to treat as joystick/gamepad
-                ESP_LOGI(TAG,
-                         "Non-boot HID device, checking for joystick/gamepad");
+                ESP_LOGI(TAG, "Non-boot HID device, checking for joystick/gamepad");
                 size_t report_desc_len = 0;
                 uint8_t* report_desc = hid_host_get_report_descriptor(
                     hid_device_handle, &report_desc_len);
@@ -191,23 +250,18 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
                 if (report_desc != NULL && report_desc_len > 0) {
                     if (parse_joystick_report_descriptor(
                             report_desc, report_desc_len, get_joystick_format())) {
-                        ESP_LOGI(TAG,
-                                 "Joystick/Gamepad descriptor parsed; "
-                                 "generic reports will be mapped to mouse");
+                        ESP_LOGI(TAG, "Joystick/Gamepad descriptor parsed; generic reports will be mapped to mouse");
                         // Joystick usually uses report protocol by default
                         // If needed:
                         // ESP_ERROR_CHECK(hid_class_request_set_protocol(
                         //     hid_device_handle, HID_REPORT_PROTOCOL_REPORT));
                     } else {
-                        ESP_LOGI(TAG,
-                                 "Non-boot HID is not recognized as joystick/"
-                                 "gamepad");
+                        ESP_LOGI(TAG, "Non-boot HID is not recognized as joystick/gamepad");
                         get_joystick_format()->is_valid = false;
                     }
                     // free(report_desc); // Uncomment if API requires
                 } else {
-                    ESP_LOGW(TAG,
-                             "Could not get report descriptor for non-boot HID");
+                    ESP_LOGW(TAG, "Could not get report descriptor for non-boot HID");
                 }
             }
 

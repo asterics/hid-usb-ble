@@ -2,8 +2,7 @@
 #include <Arduino.h>
 #include <BleMouse.h>
 #include <BLEDevice.h>
-#include "usb_host.h"
-#include "usb_hid_common.h"
+#include "usb_hid_host.h"
 
 #define OUTPUT_UNIFIED_MOUSE_DATA_TO_CONSOLE
 
@@ -19,8 +18,6 @@ void update_mouseState (unified_mouseReport_t *mouse_report) {
   y_pos += mouse_report->y_displacement;
 
   #ifdef OUTPUT_UNIFIED_MOUSE_DATA_TO_CONSOLE
-      hid_print_new_device_report_header(HID_PROTOCOL_MOUSE);
-
       printf("X: %06d\tY: %06d\t|%c|%c|%c|\t%d\n",
           mouse_report->x_displacement,
           mouse_report->y_displacement,
