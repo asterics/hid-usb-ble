@@ -8,23 +8,23 @@
 
 BleMouse bleMouse("Assistronik USB Adapter","Assistronik");
 
-void update_mouseState (unified_mouseReport_t *mouse_report) {
+void update_hidData (unified_hidData_t *hidData) {
 
   static int x_pos = 0;
   static int y_pos = 0;
 
   // Calculate absolute position from displacement
-  x_pos += mouse_report->x_displacement;
-  y_pos += mouse_report->y_displacement;
+  x_pos += hidData->x_displacement;
+  y_pos += hidData->y_displacement;
 
   #ifdef OUTPUT_UNIFIED_MOUSE_DATA_TO_CONSOLE
       printf("X: %06d\tY: %06d\t|%c|%c|%c|\t%d\n",
-          mouse_report->x_displacement,
-          mouse_report->y_displacement,
-          (mouse_report->buttons.button1 ? 'L' : ' '),
-          (mouse_report->buttons.button3 ? 'M' : ' '),
-          (mouse_report->buttons.button2 ? 'R' : ' '),
-          mouse_report->scroll_wheel);
+          hidData->x_displacement,
+          hidData->y_displacement,
+          (hidData->buttons.button1 ? 'L' : ' '),
+          (hidData->buttons.button3 ? 'M' : ' '),
+          (hidData->buttons.button2 ? 'R' : ' '),
+          hidData->scroll_wheel);
       fflush(stdout);
   #endif
 
@@ -33,11 +33,11 @@ void update_mouseState (unified_mouseReport_t *mouse_report) {
     static bool rightButtonPressed = false;
     static bool middleButtonPressed = false;
 
-    bleMouse.move(mouse_report->x_displacement, mouse_report->y_displacement);
+    bleMouse.move((int8_t)hidData->x_displacement, (int8_t)hidData->y_displacement);
 
     // Track and update left button state
-    if (mouse_report->buttons.button1 != leftButtonPressed) {
-      leftButtonPressed = mouse_report->buttons.button1;
+    if (hidData->buttons.button1 != leftButtonPressed) {
+      leftButtonPressed = hidData->buttons.button1;
       if (leftButtonPressed) {
         bleMouse.press(MOUSE_LEFT);
       } else {
@@ -46,8 +46,8 @@ void update_mouseState (unified_mouseReport_t *mouse_report) {
     }
     
     // Track and update right button state
-    if (mouse_report->buttons.button2 != rightButtonPressed) {
-      rightButtonPressed = mouse_report->buttons.button2;
+    if (hidData->buttons.button2 != rightButtonPressed) {
+      rightButtonPressed = hidData->buttons.button2;
       if (rightButtonPressed) {
         bleMouse.press(MOUSE_RIGHT);
       } else {
@@ -56,8 +56,8 @@ void update_mouseState (unified_mouseReport_t *mouse_report) {
     }
 
     // Track and update middle button state
-    if (mouse_report->buttons.button3 != middleButtonPressed) {
-      middleButtonPressed = mouse_report->buttons.button3;
+    if (hidData->buttons.button3 != middleButtonPressed) {
+      middleButtonPressed = hidData->buttons.button3;
       if (middleButtonPressed) {
         bleMouse.press(MOUSE_MIDDLE);
       } else {
@@ -66,8 +66,8 @@ void update_mouseState (unified_mouseReport_t *mouse_report) {
     }
 
     // Handle scroll wheel
-    if (mouse_report->scroll_wheel != 0) {
-      bleMouse.move(0, 0, mouse_report->scroll_wheel);
+    if (hidData->scroll_wheel != 0) {
+      bleMouse.move(0, 0, hidData->scroll_wheel);
     }
   }
 }
@@ -135,7 +135,7 @@ void setup() {
     bleMouse.begin();
 
     // register mouse report callback handler
-    register_mouse_report_callback(update_mouseState);
+    register_hidData_callback(update_hidData);
 
     //start main USB/HID task
     start_usb_host(); 

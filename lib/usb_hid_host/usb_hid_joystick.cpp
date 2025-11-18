@@ -194,12 +194,13 @@ bool parse_joystick_report_descriptor(const uint8_t* desc, size_t desc_len,joyst
 
 
 /**
- * @brief Parse joystick/gamepad input report into unified mouse report
- * First stick X/Y + first 3 buttons → unified_mouseReport_t
- * Hat switch up/down → scroll wheel
+ * @brief Parse joystick/gamepad input report into unified hidData report:
+ *  first axis maps to x/y displacements, 
+ *  first 3 buttons map to buttons 1-3
+ *  hat switch up/down maps to scroll wheel
  */
 bool parse_joystick_report(const uint8_t* data, int length,
-                                  unified_mouseReport_t* out) {
+                                  unified_hidData_t* out) {
     if (!joystick_format.is_valid) return false;
 
     memset(out, 0, sizeof(*out));
@@ -295,10 +296,10 @@ bool hid_host_joystick_report_callback(const uint8_t* const data,
                                              const int length) {
     // try to interpret HID report as joystick
     if (joystick_format.is_valid) {
-        unified_mouseReport_t unified_mouseReport;
-        if (parse_joystick_report(data, length, &unified_mouseReport)) {
-            if (get_registered_mouse_callback() != NULL) {
-                (*get_registered_mouse_callback())(&unified_mouseReport);
+        unified_hidData_t unified_hidData;
+        if (parse_joystick_report(data, length, &unified_hidData)) {
+            if (get_registered_hidData_callback() != NULL) {
+                (*get_registered_hidData_callback())(&unified_hidData);
             }
             return true;  // joystick report handled
         }

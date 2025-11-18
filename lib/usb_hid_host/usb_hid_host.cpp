@@ -20,10 +20,10 @@ QueueHandle_t hid_host_event_queue;
 bool user_shutdown = false;
 
 // Global callback function pointer
-static mouse_report_callback_t registered_mouse_callback = NULL;
+static hidData_callback_t registered_hidData_callback = NULL;
 
-mouse_report_callback_t * get_registered_mouse_callback() {
-    return &registered_mouse_callback;
+hidData_callback_t * get_registered_hidData_callback() {
+    return &registered_hidData_callback;
 }
 
 
@@ -87,14 +87,13 @@ void hid_print_new_device_report_header(hid_protocol_t proto) {
 
 
 /**
- * @brief Register a callback function to be called when mouse report is updated
+ * @brief Register a callback function to be called when hid data is updated
  *
- * @param[in] callback Pointer to callback function that accepts
- * unified_mouseReport_t*
+ * @param[in] callback Pointer to callback function that accepts unified_hidData_t*
  */
-void register_mouse_report_callback(mouse_report_callback_t callback) {
-    *get_registered_mouse_callback() = callback;
-    ESP_LOGI(TAG, "Mouse report callback %s",callback ? "registered" : "unregistered");
+void register_hidData_callback(hidData_callback_t callback) {
+    *get_registered_hidData_callback() = callback;
+    ESP_LOGI(TAG, "HidData callback %s",callback ? "registered" : "unregistered");
 }
 
 /**

@@ -253,7 +253,7 @@ bool parse_mouse_report_descriptor(const uint8_t* desc, size_t desc_len,
 
 
 bool parse_custom_mouse_report(const uint8_t* data, int length,
-                                      unified_mouseReport_t* out) {
+                                      unified_hidData_t* out) {
     if (!mouse_format.is_valid) return false;
 
     //check if report id matches in mouse_format
@@ -304,12 +304,12 @@ bool parse_custom_mouse_report(const uint8_t* data, int length,
  */
 void hid_host_mouse_report_callback(const uint8_t* const data,
                                            const int length) {
-    unified_mouseReport_t unified_mouseReport;
+    unified_hidData_t unified_hidData;
     bool parsed = false;
 
     // Try to parse using custom descriptor format first
     if (mouse_format.is_valid) {
-        parsed = parse_custom_mouse_report(data, length, &unified_mouseReport);
+        parsed = parse_custom_mouse_report(data, length, &unified_hidData);
     }
 
     // Fall back to boot protocol format
@@ -318,13 +318,12 @@ void hid_host_mouse_report_callback(const uint8_t* const data,
             (hid_mouse_input_report_boot_t*)data;
 
         // Convert boot format to standard format
-        unified_mouseReport.x_displacement = boot_report->x_displacement;
-        unified_mouseReport.y_displacement = boot_report->y_displacement;
-        unified_mouseReport.buttons.button1 = boot_report->buttons.button1;
-        unified_mouseReport.buttons.button2 = boot_report->buttons.button2;
-        unified_mouseReport.buttons.button3 = boot_report->buttons.button3;
-        unified_mouseReport.scroll_wheel =
-            0;  // Boot protocol doesn't have scroll
+        unified_hidData.x_displacement = boot_report->x_displacement;
+        unified_hidData.y_displacement = boot_report->y_displacement;
+        unified_hidData.buttons.button1 = boot_report->buttons.button1;
+        unified_hidData.buttons.button2 = boot_report->buttons.button2;
+        unified_hidData.buttons.button3 = boot_report->buttons.button3;
+        unified_hidData.scroll_wheel = 0;  // Boot protocol doesn't have scroll
         parsed = true;
 
         ESP_LOGD(TAG, "Using boot protocol fallback");
@@ -336,8 +335,8 @@ void hid_host_mouse_report_callback(const uint8_t* const data,
     }
 
     // Call registered callback function if one exists
-    if (get_registered_mouse_callback() != NULL) {
-        (*get_registered_mouse_callback())(&unified_mouseReport);
+    if (get_registered_hidData_callback() != NULL) {
+        (*get_registered_hidData_callback())(&unified_hidData);
 
     }
 }
