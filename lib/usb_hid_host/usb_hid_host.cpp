@@ -144,7 +144,7 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
             } else {
                 // try joystick report callback first
                 if (hid_host_joystick_report_callback(data, data_length)){
-                    hid_print_new_device_report_header(HID_PROTOCOL_JOYSTICK);
+                    hid_print_new_device_report_header((hid_protocol_t)HID_PROTOCOL_JOYSTICK);
                 } else {
                     // Fallback: if no joystick report handled, just hex-dump the generic report
                     hid_print_new_device_report_header(HID_PROTOCOL_NONE);

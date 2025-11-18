@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include "hid_host.h"
 
+#define  HID_PROTOCOL_JOYSTICK 0x03   // Added joystick protocol identifier
+
 // Unified report structure to handle a selected set of data from supported hid devices
 typedef struct {
     union {
