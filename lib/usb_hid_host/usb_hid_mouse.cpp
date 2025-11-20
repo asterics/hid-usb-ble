@@ -181,10 +181,15 @@ bool parse_mouse_report_descriptor(const uint8_t* desc, size_t desc_len,
                     usage_min = 0;
                     usage_max = 0;
                     have_usage_range = false;
-                    break;
+                } else if (tag == 0x0A) { // Collection
+                    // Clear usages when entering a collection.
+                    // Usages defined before a collection apply to the collection itself.
+                    usage_count = 0;
+                    usage_min = 0;
+                    usage_max = 0;
+                    have_usage_range = false;
                 }
-                // other main items (Output, Feature, Collection, End
-                // Collection) are ignored for format
+                // other main items (Output, Feature, End Collection) are ignored for format
                 break;
 
             case 1:  // Global
