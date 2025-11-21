@@ -9,12 +9,13 @@ joystick_report_format_t joystick_format = {0};
 
 joystick_report_format_t* get_joystick_format() { return &joystick_format; }
 
+// Helper to manually sign-extend a value of 'bits' width to 32-bit int
+static int32_t sign_extend(int32_t val, int bits) {
+    if (bits <= 0 || bits >= 32) return val;
+    int32_t m = 1U << (bits - 1);
+    return (val ^ m) - m;
+}
 
-/**
- * Parse HID report descriptor for joystick/gamepad:
- * - Usage Page 0x01 (Generic Desktop) axes X/Y
- * - Usage Page 0x09 (Button) for buttons
- */
 bool parse_joystick_report_descriptor(const uint8_t* desc, size_t desc_len,joystick_report_format_t* fmt) {
     memset(fmt, 0, sizeof(*fmt));
 
@@ -23,6 +24,7 @@ bool parse_joystick_report_descriptor(const uint8_t* desc, size_t desc_len,joyst
     int report_count = 0;
     uint16_t usage_page = 0;
     bool report_id_found = false;
+    int32_t logical_min = 0; // Track Logical Minimum to determine signedness
 
     uint16_t usages[16];
     int usage_count = 0;
@@ -92,21 +94,22 @@ bool parse_joystick_report_descriptor(const uint8_t* desc, size_t desc_len,joyst
                             if (!found_x && uval == 0x30) { // X-Axis 
                                 fmt->x_bit_offset = field_bit;
                                 fmt->x_bits = report_size;
-                                fmt->x_signed = true;
+                                fmt->x_signed = (logical_min < 0); // Determine sign based on Logical Min
                                 found_x = true;
-                                ESP_LOGI(TAG, "Joystick X: bit_offset=%d bits=%d", fmt->x_bit_offset, fmt->x_bits);
+                                ESP_LOGI(TAG, "Joystick X: bit_offset=%d bits=%d signed=%d", fmt->x_bit_offset, fmt->x_bits, fmt->x_signed);
                             } else if (!found_y && uval == 0x31) { // Y-Axis
                                 fmt->y_bit_offset = field_bit;
                                 fmt->y_bits = report_size;
-                                fmt->y_signed = true;
+                                fmt->y_signed = (logical_min < 0); // Determine sign based on Logical Min
                                 found_y = true;
-                                ESP_LOGI(TAG, "Joystick Y: bit_offset=%d bits=%d", fmt->y_bit_offset, fmt->y_bits);
+                                ESP_LOGI(TAG, "Joystick Y: bit_offset=%d bits=%d signed=%d", fmt->y_bit_offset, fmt->y_bits, fmt->y_signed);
                             } else if (!found_hat && uval == 0x39) { // Hat Switch
                                 fmt->hat_bit_offset = field_bit;
                                 fmt->hat_bits = report_size;
+                                fmt->hat_logical_min = logical_min; // Capture Logical Min for Hat
                                 fmt->has_hat = true;
                                 found_hat = true;
-                                ESP_LOGI(TAG, "Joystick Hat: bit_offset=%d bits=%d", fmt->hat_bit_offset, fmt->hat_bits);
+                                ESP_LOGI(TAG, "Joystick Hat: bit_offset=%d bits=%d min=%d", fmt->hat_bit_offset, fmt->hat_bits, fmt->hat_logical_min);
                             }
                             // For each usage, advance by report_size bits
                             field_bit += report_size;
@@ -141,6 +144,12 @@ bool parse_joystick_report_descriptor(const uint8_t* desc, size_t desc_len,joyst
                 switch (tag) {
                     case 0x0: // Usage Page
                         usage_page = (uint16_t)data;
+                        break;
+                    case 0x1: // Logical Min
+                        // Handle sign extension based on size
+                        if (size == 1) logical_min = (int8_t)data;
+                        else if (size == 2) logical_min = (int16_t)data;
+                        else logical_min = (int32_t)data;
                         break;
                     case 0x7: // Report Size
                         report_size = (int)data;
@@ -212,13 +221,28 @@ bool parse_joystick_report(const uint8_t* data, int length,
     out->buttons.button2 = (btns & 0x02) != 0; // Button 2
     out->buttons.button3 = (btns & 0x04) != 0; // Button 3
 
-    // Extract X and Y axis values using int32_t to support various resolutions
+    // Extract X and Y axis values as UNSIGNED raw bits first
+    // We pass 'false' for is_signed to prevent hid_extract_int from doing sign extension
     int32_t x = hid_extract_int(
         data, length, joystick_format.x_bit_offset, joystick_format.x_bits,
-        joystick_format.x_signed);
+        false);
     int32_t y = hid_extract_int(
         data, length, joystick_format.y_bit_offset, joystick_format.y_bits,
-        joystick_format.y_signed);
+        false);
+
+    // Fix: Ensure correct sign extension for signed values
+    if (joystick_format.x_signed) {
+        x = sign_extend(x, joystick_format.x_bits);
+    } else if (joystick_format.x_bits > 0) {
+        // If unsigned, center the value (e.g., 0..1023 -> -512..511)
+        x -= (1 << (joystick_format.x_bits - 1));
+    }
+
+    if (joystick_format.y_signed) {
+        y = sign_extend(y, joystick_format.y_bits);
+    } else if (joystick_format.y_bits > 0) {
+        y -= (1 << (joystick_format.y_bits - 1));
+    }
 
     // --- Convert Joystick Axis to Mouse Displacement (Dynamic Scaling) ---
     int16_t mouse_x = 0;
@@ -256,23 +280,20 @@ bool parse_joystick_report(const uint8_t* data, int length,
         int32_t hat = hid_extract_int(data, length, joystick_format.hat_bit_offset,
                                       joystick_format.hat_bits, false);
         
-        // Hat switch values (typical for 8-way hat):
-        // 0 = centered/neutral (no direction)
-        // 1 = North (up)
-        // 2 = North-East
-        // 3 = East (right)
-        // 4 = South-East
-        // 5 = South (down)
-        // 6 = South-West
-        // 7 = West (left)
-        // 8 = North-West
-        
-        if (hat == 1 || hat == 2 || hat == 8) {
-            // Up or up-diagonal
-            out->scroll_wheel = 1;
-        } else if (hat == 5 || hat == 4 || hat == 6) {
-            // Down or down-diagonal
-            out->scroll_wheel = -1;
+        // Normalize Hat value to 0..7 range (0=Up, 1=NE, ... 7=NW)
+        // Joystick A: Min=0 -> 0..7
+        // Joystick B: Min=1 -> 1..8 -> (hat - 1) -> 0..7
+        int normalized_hat = hat - joystick_format.hat_logical_min;
+
+        // Check if value is within valid 8-direction range
+        if (normalized_hat >= 0 && normalized_hat <= 7) {
+            if (normalized_hat == 7 || normalized_hat == 0 || normalized_hat == 1) {
+                // Up or up-diagonal
+                out->scroll_wheel = 1;
+            } else if (normalized_hat == 3 || normalized_hat == 4 || normalized_hat == 5) {
+                // Down or down-diagonal
+                out->scroll_wheel = -1;
+            }
         }
     }
 
@@ -280,7 +301,6 @@ bool parse_joystick_report(const uint8_t* data, int length,
              out->x_displacement, out->y_displacement, out->scroll_wheel);
     return true;
 }
-
 
 /**
  * @brief USB HID Host Joystick Interface report callback handler
