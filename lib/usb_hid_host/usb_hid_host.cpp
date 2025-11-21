@@ -18,6 +18,8 @@
 static const char* TAG = "usb-hid-host";
 QueueHandle_t hid_host_event_queue;
 bool user_shutdown = false;
+bool addDelayDuringEnumeration = true;     // TBD: this is a workaround for some devices that need delay during enumeration
+                                           // see issue: https://github.com/espressif/esp-idf/issues/
 
 // Global callback function pointer
 static hidData_callback_t registered_hidData_callback = NULL;
@@ -190,6 +192,7 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
 
     switch (event) {
         case HID_HOST_DRIVER_EVENT_CONNECTED: {
+            addDelayDuringEnumeration = false; // disable delay after first device connected
             ESP_LOGI(TAG, "HID Device, protocol '%s' CONNECTED",
                      hid_proto_name_str[dev_params.proto]);
             ESP_ERROR_CHECK(
@@ -299,6 +302,9 @@ static void usb_lib_task(void* arg) {
         uint32_t event_flags;
         usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
 
+        if (addDelayDuringEnumeration)
+            vTaskDelay(pdMS_TO_TICKS(10)); 
+
         // Release devices once all clients has deregistered
         if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
             usb_host_device_free_all();
@@ -307,7 +313,7 @@ static void usb_lib_task(void* arg) {
         // All devices were removed
         if (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
             ESP_LOGI(TAG, "USB Event flags: ALL_FREE");
-            digitalWrite(LED_BUILTIN, HIGH);
+            addDelayDuringEnumeration = true; // re-enable delay for next enumeration
         }
     }
     // Clean up USB Host
